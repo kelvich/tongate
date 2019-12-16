@@ -48,11 +48,15 @@ void TonGate::set_db_root(std::string db_root) {
 }
 
 void TonGate::set_server_addr(td::IPAddress server_addr) {
-  dht_addr_ = server_addr;
+  server_ip_addr_ = server_addr;
 }
 
 void TonGate::set_socks_addr(td::IPAddress socks_addr) {
-  socks_addr_ = socks_addr;
+  socks_ip_addr_ = socks_addr;
+}
+
+void TonGate::set_ping_dest(ton::adnl::AdnlNodeIdShort ping_dest_id) {
+  ping_dest_id_ = ping_dest_id;
 }
 
 /*
@@ -60,6 +64,7 @@ void TonGate::set_socks_addr(td::IPAddress socks_addr) {
  */
 
 void TonGate::start_up() {
+  alarm_timestamp() = td::Timestamp::in(1.0 + td::Random::fast(0, 100) * 0.01);
 }
 
 // XXX: use path.join
@@ -81,22 +86,22 @@ void TonGate::run() {
   keyring_ = ton::keyring::Keyring::create(db_root_ + "/keyring");
 
   // start ADNL
-  adnl_network_manager_ = ton::adnl::AdnlNetworkManager::create(static_cast<td::uint16>(dht_addr_.get_port()));
+  adnl_network_manager_ = ton::adnl::AdnlNetworkManager::create(static_cast<td::uint16>(server_ip_addr_.get_port()));
   adnl_ = ton::adnl::Adnl::create(db_root_, keyring_.get());
-  td::actor::send_closure(adnl_network_manager_, &ton::adnl::AdnlNetworkManager::add_self_addr, dht_addr_, 0);
+  td::actor::send_closure(adnl_network_manager_, &ton::adnl::AdnlNetworkManager::add_self_addr, server_ip_addr_, 0);
   td::actor::send_closure(adnl_, &ton::adnl::Adnl::register_network_manager, adnl_network_manager_.get());
-  td::actor::send_closure(adnl_, &ton::adnl::Adnl::add_static_nodes_from_config, std::move(adnl_static_nodes_));
 
   // add source addr id
   ton::PrivateKey adnl_pk = load_or_create_key("adnl");
   ton::PublicKey adnl_pub = adnl_pk.compute_public_key();
-  add_adnl_addr(adnl_pub, dht_addr_);
+  add_adnl_addr(adnl_pub, server_ip_addr_);
+  adnl_id_ = ton::adnl::AdnlNodeIdShort{adnl_pub.compute_short_id()};
 
   // start DHT
   ton::PrivateKey dht_pk = load_or_create_key("dht");
   ton::PublicKey dht_pub = dht_pk.compute_public_key();
   ton::PublicKeyHash dht_id = dht_pk.compute_short_id();
-  add_adnl_addr(dht_pub, dht_addr_);
+  add_adnl_addr(dht_pub, server_ip_addr_);
 
   auto D = ton::dht::Dht::create(ton::adnl::AdnlNodeIdShort{dht_id}, db_root_, dht_config_, keyring_.get(), adnl_.get());
   D.ensure();
@@ -159,13 +164,6 @@ td::Status TonGate::load_global_config() {
   TRY_RESULT_PREFIX(dht, ton::dht::Dht::create_global_config(std::move(conf.dht_)), "bad [dht] section: ");
   dht_config_ = std::move(dht);
 
-  if (conf.adnl_) {
-    if (conf.adnl_->static_nodes_) {
-      TRY_RESULT_PREFIX_ASSIGN(adnl_static_nodes_, ton::adnl::AdnlNodesList::create(conf.adnl_->static_nodes_),
-                               "bad static adnl nodes: ");
-    }
-  }
-
   return td::Status::OK();
 }
 
@@ -191,6 +189,21 @@ ton::PrivateKey TonGate::load_or_create_key(std::string name) {
             << std::endl;
 
   return std::move(pk);
+}
+
+void TonGate::alarm() {
+    std::cout << "send_ping alarm" << std::endl;
+    if (!ping_dest_id_.is_zero()) {
+      td::BufferSlice msg{4};
+      msg.as_slice()[0] = 'H';
+      msg.as_slice()[1] = 'i';
+      msg.as_slice()[2] = '!';
+      msg.as_slice()[3] = '\0';
+
+      td::actor::send_closure(adnl_, &ton::adnl::Adnl::send_message, adnl_id_, ping_dest_id_, std::move(msg));
+      std::cout << "ping closure sent!" << std::endl;
+    }
+    alarm_timestamp() = td::Timestamp::in(1.0 + td::Random::fast(0, 100) * 0.01);
 }
 
 int main(int argc, char *argv[]) {
@@ -273,6 +286,13 @@ int main(int argc, char *argv[]) {
   //   acts.push_back([&x]() { td::actor::send_closure(x, &TonGate::add_tun); });
   //   return td::Status::OK();
   // });
+  p.add_option('p', "ping", "ping given pubkey via ADNL", [&](td::Slice arg) {
+    TRY_RESULT_PREFIX(dst_pub_slice, td::base64_decode(arg), "ADNL pubkey base64 decode failed:");
+    TRY_RESULT_PREFIX(dst_pub, ton::PublicKey::import(dst_pub_slice), "ADNL pubkey import failed:");
+    auto dest_id = ton::adnl::AdnlNodeIdShort{dst_pub.compute_short_id()};
+    acts.push_back([&x, dest_id]() { td::actor::send_closure(x, &TonGate::set_ping_dest, dest_id); });
+    return td::Status::OK();
+  });
 
   auto S = p.run(argc, argv);
   if (S.is_error()) {

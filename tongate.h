@@ -26,8 +26,10 @@ class TonGate: public td::actor::Actor {
   std::string global_config_ = "ton-global.config.json";
   std::string db_root_ = "/var/ton-work/db/";
   std::shared_ptr<ton::dht::DhtGlobalConfig> dht_config_;
-  td::IPAddress dht_addr_;
-  td::IPAddress socks_addr_;
+  td::IPAddress server_ip_addr_;
+  td::IPAddress socks_ip_addr_;
+  ton::adnl::AdnlNodeIdShort adnl_id_;
+  ton::adnl::AdnlNodeIdShort ping_dest_id_ = ton::adnl::AdnlNodeIdShort::zero();
   // std::set<ton::PublicKeyHash> dht_ids;
   // std::map<ton::PublicKeyHash, AdnlCategory> adnl_ids;
 
@@ -35,6 +37,7 @@ class TonGate: public td::actor::Actor {
   void subscribe(ton::PublicKey dht_pub, std::string prefix);
   void add_adnl_addr(ton::PublicKey pub, td::IPAddress ip_addr);
   // td::Result<bool> config_add_dht_node(ton::PublicKeyHash id);
+  void send_ping();
 
  public:
 
@@ -42,10 +45,12 @@ class TonGate: public td::actor::Actor {
   void set_db_root(std::string db_root);
   void set_server_addr(td::IPAddress server_addr);
   void set_socks_addr(td::IPAddress socks_addr);
+  void set_ping_dest(ton::adnl::AdnlNodeIdShort ping_dest_id);
 
   TonGate() {}
 
   void start_up() override;
+  void alarm() override;
   td::Status load_global_config();
   void run();
 
