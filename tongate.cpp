@@ -97,8 +97,8 @@ void TonGate::run() {
   ton::PrivateKey adnl_pk = load_or_create_key("adnl");
   ton::PublicKey adnl_pub = adnl_pk.compute_public_key();
   add_adnl_addr(adnl_pub, server_ip_addr_);
-  adnl_short_= adnl_pub.compute_short_id();
   adnl_id_ = ton::adnl::AdnlNodeIdShort{adnl_pub.compute_short_id()};
+  adnl_short_= adnl_id_.pubkey_hash();
 
   // start DHT
   ton::PrivateKey dht_pk = load_or_create_key("dht");
@@ -117,6 +117,8 @@ void TonGate::run() {
 
   // start overlays
   overlay_manager_ = ton::overlay::Overlays::create(db_root_, keyring_.get(), adnl_.get(), dht_nodes_[default_dht_node_].get());
+
+  create_overlay();
 }
 
 void TonGate::add_adnl_addr(ton::PublicKey pub, td::IPAddress ip_addr) {
@@ -206,9 +208,11 @@ void TonGate::alarm() {
     }
 
     {
-      auto msg = td::BufferSlice("Look at me, i'm " + server_ip_addr_.get_ip_str().str());
+      auto msg = td::BufferSlice("Look at me, i'm " + 
+        std::to_string(server_ip_addr_.get_port()) + " " +
+        std::to_string(td::Time::now()));
       td::actor::send_closure(overlay_manager_.get(), &ton::overlay::Overlays::send_broadcast_ex,
-                            adnl_id_, overlay_id_, adnl_short_, 0,
+                            adnl_id_, overlay_id_, adnl_short_, ton::overlay::Overlays::BroadcastFlagAnySender(),
                             std::move(msg));
     }
 
@@ -231,7 +235,9 @@ void TonGate::create_overlay() {
       std::cout << "got overquery" << std::endl;
     }
     void receive_broadcast(ton::PublicKeyHash src, ton::overlay::OverlayIdShort overlay_id, td::BufferSlice data) override {
-      std::cout << "got overbroadcast" << std::endl;
+      std::cout << "got overbroadcast: ";
+      std::cout.write(data.as_slice().data(), data.size());
+      std::cout << std::endl;
     }
     Callback(td::actor::ActorId<TonGate> node) : node_(node) {
     }
