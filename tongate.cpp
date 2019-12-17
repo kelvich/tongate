@@ -22,6 +22,8 @@
 // #include "memprof/memprof.h"
 
 #include "dht/dht.hpp"
+#include "overlay/overlays.h"
+#include "overlay/overlay.hpp"
 // #include "dht-server/dht-server.hpp"
 
 #include "tongate.h"
@@ -95,6 +97,7 @@ void TonGate::run() {
   ton::PrivateKey adnl_pk = load_or_create_key("adnl");
   ton::PublicKey adnl_pub = adnl_pk.compute_public_key();
   add_adnl_addr(adnl_pub, server_ip_addr_);
+  adnl_short_= adnl_pub.compute_short_id();
   adnl_id_ = ton::adnl::AdnlNodeIdShort{adnl_pub.compute_short_id()};
 
   // start DHT
@@ -111,6 +114,9 @@ void TonGate::run() {
 
   // ton::adnl::Adnl::int_to_bytestring(ton::ton_api::adnl_ping::ID),
   subscribe(dht_pub, "H");
+
+  // start overlays
+  overlay_manager_ = ton::overlay::Overlays::create(db_root_, keyring_.get(), adnl_.get(), dht_nodes_[default_dht_node_].get());
 }
 
 void TonGate::add_adnl_addr(ton::PublicKey pub, td::IPAddress ip_addr) {
@@ -194,17 +200,50 @@ ton::PrivateKey TonGate::load_or_create_key(std::string name) {
 void TonGate::alarm() {
     std::cout << "send_ping alarm" << std::endl;
     if (!ping_dest_id_.is_zero()) {
-      td::BufferSlice msg{4};
-      msg.as_slice()[0] = 'H';
-      msg.as_slice()[1] = 'i';
-      msg.as_slice()[2] = '!';
-      msg.as_slice()[3] = '\0';
-
+      auto msg = td::BufferSlice("Hi!");
       td::actor::send_closure(adnl_, &ton::adnl::Adnl::send_message, adnl_id_, ping_dest_id_, std::move(msg));
       std::cout << "ping closure sent!" << std::endl;
     }
+
+    {
+      auto msg = td::BufferSlice("Look at me, i'm " + server_ip_addr_.get_ip_str().str());
+      td::actor::send_closure(overlay_manager_.get(), &ton::overlay::Overlays::send_broadcast_ex,
+                            adnl_id_, overlay_id_, adnl_short_, 0,
+                            std::move(msg));
+    }
+
     alarm_timestamp() = td::Timestamp::in(1.0 + td::Random::fast(0, 100) * 0.01);
 }
+
+void TonGate::create_overlay() {
+  auto n = td::BufferSlice("ProxyOffers");
+  auto overlay_id_full = ton::overlay::OverlayIdFull{std::move(n)};
+  overlay_id_ = overlay_id_full.compute_short_id();
+  auto rules = ton::overlay::OverlayPrivacyRules{ton::overlay::Overlays::max_fec_broadcast_size()};
+
+  class Callback : public ton::overlay::Overlays::Callback {
+   public:
+    void receive_message(ton::adnl::AdnlNodeIdShort src, ton::overlay::OverlayIdShort overlay_id, td::BufferSlice data) override {
+      std::cout << "got overmessage" << std::endl;
+    }
+    void receive_query(ton::adnl::AdnlNodeIdShort src, ton::overlay::OverlayIdShort overlay_id, td::BufferSlice data,
+                       td::Promise<td::BufferSlice> promise) override {
+      std::cout << "got overquery" << std::endl;
+    }
+    void receive_broadcast(ton::PublicKeyHash src, ton::overlay::OverlayIdShort overlay_id, td::BufferSlice data) override {
+      std::cout << "got overbroadcast" << std::endl;
+    }
+    Callback(td::actor::ActorId<TonGate> node) : node_(node) {
+    }
+   private:
+    td::actor::ActorId<TonGate> node_;
+  };
+
+  td::actor::send_closure(overlay_manager_.get(), &ton::overlay::Overlays::create_public_overlay,
+                          adnl_id_, overlay_id_full.clone(),
+                          std::make_unique<Callback>(actor_id(this)), rules);
+}
+
 
 int main(int argc, char *argv[]) {
   SET_VERBOSITY_LEVEL(verbosity_DEBUG + 42);
