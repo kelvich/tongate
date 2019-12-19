@@ -1,11 +1,8 @@
 #include "ton/ton-types.h"
 #include "ton/ton-tl.hpp"
 #include "ton/ton-io.hpp"
-
 #include "common/errorlog.h"
-
 #include "crypto/vm/cp0.h"
-
 #include "td/utils/filesystem.h"
 #include "td/utils/overloaded.h"
 #include "td/utils/OptionsParser.h"
@@ -16,26 +13,64 @@
 #include "td/utils/ThreadSafeCounter.h"
 #include "td/utils/TsFileLog.h"
 #include "td/utils/Random.h"
-
+#include "td/net/UdpServer.h"
 #include "auto/tl/lite_api.h"
-
-// #include "memprof/memprof.h"
-
 #include "dht/dht.hpp"
 #include "overlay/overlays.h"
 #include "overlay/overlay.hpp"
-// #include "dht-server/dht-server.hpp"
 
 #include "tongate.h"
 
 #if TD_DARWIN || TD_LINUX
 #include <unistd.h>
 #endif
-
 #include <iostream>
 #include <sstream>
 #include <cstdlib>
 #include <set>
+
+
+// XXX: change to get_ip_str()
+static std::string Ip4String(std::int32_t num)
+{
+  char buf[20];
+  unsigned char addr[4];
+  addr[3] = 0xFF & num;
+  addr[2] = 0xFF & (num >> 8);
+  addr[1] = 0xFF & (num >> 16);
+  addr[0] = 0xFF & (num >> 24);
+  snprintf(buf, sizeof(buf),"%d.%d.%d.%d", addr[0], addr[1], addr[2], addr[3]);
+  return std::string(buf);
+}
+
+/*
+ * NAT traversal.
+ */
+
+void IdentityListener::start_up() {
+
+  std::cout << "IdentityListener" << std::endl;
+
+  class Callback : public td::UdpServer::Callback {
+   public:
+    Callback(td::actor::ActorId<TonGate> tongate) : tongate_(std::move(tongate)){
+    }
+
+   private:
+    td::actor::ActorId<TonGate> tongate_;
+
+    void on_udp_message(td::UdpMessage udp_message) override {
+      std::cout
+        << udp_message.address.get_ip_str().str()
+        << ":" << udp_message.address.get_port()
+        << std::endl;
+    }
+  };
+
+  auto X = td::UdpServer::create("udp server", port_, std::make_unique<Callback>(tongate_));
+  X.ensure();
+  in_udp_server_ = X.move_as_ok();
+}
 
 /*
  * Command-line option setters
@@ -49,8 +84,16 @@ void TonGate::set_db_root(std::string db_root) {
   db_root_ = db_root;
 }
 
-void TonGate::set_server_addr(td::IPAddress server_addr) {
-  server_ip_addr_ = server_addr;
+void TonGate::toggle_server() {
+  toggle_server_ = true;
+}
+
+void TonGate::set_advertised_addr(td::IPAddress server_addr) {
+  advertised_ip_addr_ = server_addr;
+}
+
+void TonGate::toggle_discovery() {
+  toggle_discovery_ = true;
 }
 
 void TonGate::set_socks_addr(td::IPAddress socks_addr) {
@@ -69,11 +112,7 @@ void TonGate::start_up() {
   // alarm_timestamp() = td::Timestamp::in(1.0 + td::Random::fast(0, 100) * 0.01);
 }
 
-// XXX: use path.join
 void TonGate::run() {
-
-  std::cout << "rrrun!" << std::endl;
-
   td::mkdir(db_root_).ensure();
   td::mkdir(db_root_ + "/logs").ensure();
   td::mkdir(db_root_ + "/keys").ensure();
@@ -88,15 +127,15 @@ void TonGate::run() {
   keyring_ = ton::keyring::Keyring::create(db_root_ + "/keyring");
 
   // start ADNL
-  adnl_network_manager_ = ton::adnl::AdnlNetworkManager::create(static_cast<td::uint16>(server_ip_addr_.get_port()));
+  adnl_network_manager_ = ton::adnl::AdnlNetworkManager::create(static_cast<td::uint16>(advertised_ip_addr_.get_port()));
   adnl_ = ton::adnl::Adnl::create(db_root_, keyring_.get());
-  td::actor::send_closure(adnl_network_manager_, &ton::adnl::AdnlNetworkManager::add_self_addr, server_ip_addr_, 0);
+  td::actor::send_closure(adnl_network_manager_, &ton::adnl::AdnlNetworkManager::add_self_addr, advertised_ip_addr_, 0);
   td::actor::send_closure(adnl_, &ton::adnl::Adnl::register_network_manager, adnl_network_manager_.get());
 
   // add source addr id
   ton::PrivateKey adnl_pk = load_or_create_key("adnl");
   ton::PublicKey adnl_pub = adnl_pk.compute_public_key();
-  add_adnl_addr(adnl_pub, server_ip_addr_);
+  add_adnl_addr(adnl_pub, advertised_ip_addr_);
   adnl_id_ = ton::adnl::AdnlNodeIdShort{adnl_pub.compute_short_id()};
   adnl_short_= adnl_id_.pubkey_hash();
 
@@ -104,24 +143,103 @@ void TonGate::run() {
   ton::PrivateKey dht_pk = load_or_create_key("dht");
   ton::PublicKey dht_pub = dht_pk.compute_public_key();
   ton::PublicKeyHash dht_id = dht_pk.compute_short_id();
-  add_adnl_addr(dht_pub, server_ip_addr_);
+  add_adnl_addr(dht_pub, advertised_ip_addr_);
 
   auto D = ton::dht::Dht::create(ton::adnl::AdnlNodeIdShort{dht_id}, db_root_, dht_config_, keyring_.get(), adnl_.get());
   D.ensure();
-  dht_nodes_[dht_id] = D.move_as_ok();
-  default_dht_node_ = dht_id;
-  td::actor::send_closure(adnl_, &ton::adnl::Adnl::register_dht_node, dht_nodes_[default_dht_node_].get());
+  dht_node_ = D.move_as_ok();
+  td::actor::send_closure(adnl_, &ton::adnl::Adnl::register_dht_node, dht_node_.get());
 
-  // ton::adnl::Adnl::int_to_bytestring(ton::ton_api::adnl_ping::ID),
-  subscribe(dht_pub, "H");
+  // subscribe(adnl_pub, "H");
 
   // start overlays
-  overlay_manager_ = ton::overlay::Overlays::create(db_root_, keyring_.get(), adnl_.get(), dht_nodes_[default_dht_node_].get());
+  if (toggle_server_) {
+    overlay_manager_ = ton::overlay::Overlays::create(db_root_, keyring_.get(), adnl_.get(), dht_node_.get());
 
-  create_overlay();
+    create_overlay();
+
+    idl_ = td::actor::create_actor<IdentityListener>("IdentityListener",
+      advertised_ip_addr_.get_port() + 1, actor_id(this));
+  }
 
   alarm_timestamp() = td::Timestamp::in(1.0 + td::Random::fast(0, 100) * 0.01);
 }
+
+void TonGate::do_discovery() {
+  auto P = td::PromiseCreator::lambda([SelfId = actor_id(this)](td::Result<ton::dht::DhtValue> res) {
+    if (res.is_ok()) {
+      auto v = res.move_as_ok();
+      auto R = ton::fetch_tl_object<ton::ton_api::overlay_nodes>(v.value().clone(), true);
+      if (R.is_ok()) {
+        auto r = R.move_as_ok();
+        // std::cout << ": received " << r->nodes_.size() << " nodes from overlay" << std::endl;
+        // std::cout << ": nodes: " << ton::ton_api::to_string(r) << std::endl;
+        std::vector<ton::overlay::OverlayNode> nodes;
+        for (auto &n : r->nodes_) {
+          auto N = ton::overlay::OverlayNode::create(n);
+          if (N.is_ok()) {
+            auto curr_node = N.move_as_ok();
+            // std::cout << "got node:  " 
+              // << td::base64_encode(curr_node.adnl_id_full().pubkey().export_as_slice().as_slice())
+              // << std::endl;
+
+            td::actor::send_closure(SelfId, &TonGate::adnl_to_ip, curr_node.adnl_id_full());
+          }
+        }
+      } else {
+        std::cout << ": incorrect value in DHT for overlay nodes: " << R.move_as_error().to_string() << std::endl;
+      }
+    } else {
+      std::cout << ": can not get value from DHT: " << res.move_as_error().to_string() << std::endl;
+    }
+  });
+
+
+  auto n = td::BufferSlice("ProxyOffers");
+  auto overlay_id_full = ton::overlay::OverlayIdFull{std::move(n)};
+  auto overlay_id = overlay_id_full.compute_short_id();
+  td::actor::send_closure(dht_node_.get(),
+                          &ton::dht::Dht::get_value,
+                          ton::dht::DhtKey{overlay_id.pubkey_hash(), "nodes", 0},
+                          std::move(P));
+}
+
+void TonGate::adnl_to_ip(ton::adnl::AdnlNodeIdFull adnl_id) {
+
+  auto P = td::PromiseCreator::lambda([SelfId = actor_id(this),
+                                       adnl_id = adnl_id](td::Result<ton::dht::DhtValue> kv) {
+    if (kv.is_error()) {
+      std::cout << "failed to get from dht: " << kv.move_as_error().to_string() << std::endl;
+      return;
+    }
+    auto k = kv.move_as_ok();
+    auto pub = ton::adnl::AdnlNodeIdFull{k.key().public_key()};
+    CHECK(pub.compute_short_id() == adnl_id.compute_short_id());
+
+    auto F = ton::fetch_tl_object<ton::ton_api::adnl_addressList>(k.value().clone(), true);
+    if (F.is_error()) {
+      std::cout << "bad dht value: " << kv.move_as_error().to_string() << std::endl;
+      return;
+    }
+    auto addr_list = F.move_as_ok();
+    for (auto &addr : addr_list->addrs_) {
+      ton::ton_api::downcast_call(*const_cast<ton::ton_api::adnl_Address *>(addr.get()),
+                                  td::overloaded(
+                                      [&](const ton::ton_api::adnl_address_udp &obj) {
+                                        std::cout << "Got addr: " << Ip4String(obj.ip_) << ":" << obj.port_ << std::endl;
+                                      },
+                                      [&](const ton::ton_api::adnl_address_udp6 &obj) {
+                                        std::cout << "Got addr6: " << obj.ip_ << ":" << obj.port_ << std::endl;
+                                      }));
+    }
+  });
+
+  td::actor::send_closure(dht_node_, &ton::dht::Dht::get_value,
+                          ton::dht::DhtKey{adnl_id.compute_short_id().pubkey_hash(), "address", 0},
+                          std::move(P));
+
+}
+
 
 void TonGate::add_adnl_addr(ton::PublicKey pub, td::IPAddress ip_addr) {
     td::uint32 ts = static_cast<td::uint32>(td::Clocks::system());
@@ -209,42 +327,15 @@ void TonGate::alarm() {
       std::cout << "ping closure sent!" << std::endl;
     }
 
-    {
+    do_discovery();
+
+    if (toggle_server_) {
       auto msg = td::BufferSlice("Look at me, i'm " + 
-        std::to_string(server_ip_addr_.get_port()) + " " +
+        std::to_string(advertised_ip_addr_.get_port()) + " " +
         std::to_string(td::Time::now()));
       td::actor::send_closure(overlay_manager_.get(), &ton::overlay::Overlays::send_broadcast_ex,
                             adnl_id_, overlay_id_, adnl_short_, ton::overlay::Overlays::BroadcastFlagAnySender(),
                             std::move(msg));
-    }
-
-    {
-      auto P = td::PromiseCreator::lambda([SelfId = actor_id(this)](td::Result<ton::dht::DhtValue> res) {
-        if (res.is_ok()) {
-          auto v = res.move_as_ok();
-          auto R = ton::fetch_tl_object<ton::ton_api::overlay_nodes>(v.value().clone(), true);
-          if (R.is_ok()) {
-            auto r = R.move_as_ok();
-            std::cout << ": received " << r->nodes_.size() << " nodes from overlay" << std::endl;
-            std::cout << ": nodes: " << ton::ton_api::to_string(r) << std::endl;
-            std::vector<ton::overlay::OverlayNode> nodes;
-            for (auto &n : r->nodes_) {
-              auto N = ton::overlay::OverlayNode::create(n);
-              if (N.is_ok()) {
-                nodes.emplace_back(N.move_as_ok());
-              }
-            }
-          } else {
-            std::cout << ": incorrect value in DHT for overlay nodes: " << R.move_as_error().to_string() << std::endl;
-          }
-        } else {
-          std::cout << ": can not get value from DHT: " << res.move_as_error().to_string() << std::endl;
-        }
-      });
-      td::actor::send_closure(dht_nodes_[default_dht_node_].get(),
-                              &ton::dht::Dht::get_value,
-                              ton::dht::DhtKey{overlay_id_.pubkey_hash(), "nodes", 0},
-                              std::move(P));
     }
 
     alarm_timestamp() = td::Timestamp::in(1.0 + td::Random::fast(0, 100) * 0.01);
@@ -321,7 +412,6 @@ int main(int argc, char *argv[]) {
   });
   p.add_option('D', "db", "root for dbs", [&](td::Slice fname) {
     acts.push_back([&x, fname = fname.str()]() { td::actor::send_closure(x, &TonGate::set_db_root, fname); });
-    std::cout << "!" << std::endl;
     return td::Status::OK();
   });
   p.add_option('l', "logname", "log to file", [&](td::Slice fname) {
@@ -346,10 +436,14 @@ int main(int argc, char *argv[]) {
   //
   // Operation mode
   //
-  p.add_option('s', "server", "start gate server at ip:port", [&](td::Slice arg) {
+  p.add_option('a', "advertise", "advertise ip:port as public address", [&](td::Slice arg) {
     td::IPAddress addr;
     TRY_STATUS(addr.init_host_port(arg.str()));
-    acts.push_back([&x, addr]() { td::actor::send_closure(x, &TonGate::set_server_addr, addr); });
+    acts.push_back([&x, addr]() { td::actor::send_closure(x, &TonGate::set_advertised_addr, addr); });
+    return td::Status::OK();
+  });
+  p.add_option('s', "server", "start server at advertised address", [&]() {
+    acts.push_back([&x]() { td::actor::send_closure(x, &TonGate::toggle_server); });
     return td::Status::OK();
   });
   p.add_option('c', "client", "start SOCKS5 gate client at ip:port", [&](td::Slice arg) {
@@ -369,6 +463,10 @@ int main(int argc, char *argv[]) {
     acts.push_back([&x, dest_id]() { td::actor::send_closure(x, &TonGate::set_ping_dest, dest_id); });
     return td::Status::OK();
   });
+  p.add_option('L', "lookup", "lookup available entry points", [&]() {
+    acts.push_back([&x]() { td::actor::send_closure(x, &TonGate::toggle_discovery); });
+    return td::Status::OK();
+  });
 
   auto S = p.run(argc, argv);
   if (S.is_error()) {
@@ -380,7 +478,6 @@ int main(int argc, char *argv[]) {
   scheduler.run_in_context([&] {
     x = td::actor::create_actor<TonGate>("ton-gate");
     for (auto &act : acts) {
-      std::cout << "act" << std::endl;
       act();
     }
     acts.clear();
