@@ -66,7 +66,7 @@ void TonGate::set_ping_dest(ton::adnl::AdnlNodeIdShort ping_dest_id) {
  */
 
 void TonGate::start_up() {
-  alarm_timestamp() = td::Timestamp::in(1.0 + td::Random::fast(0, 100) * 0.01);
+  // alarm_timestamp() = td::Timestamp::in(1.0 + td::Random::fast(0, 100) * 0.01);
 }
 
 // XXX: use path.join
@@ -119,6 +119,8 @@ void TonGate::run() {
   overlay_manager_ = ton::overlay::Overlays::create(db_root_, keyring_.get(), adnl_.get(), dht_nodes_[default_dht_node_].get());
 
   create_overlay();
+
+  alarm_timestamp() = td::Timestamp::in(1.0 + td::Random::fast(0, 100) * 0.01);
 }
 
 void TonGate::add_adnl_addr(ton::PublicKey pub, td::IPAddress ip_addr) {
@@ -214,6 +216,35 @@ void TonGate::alarm() {
       td::actor::send_closure(overlay_manager_.get(), &ton::overlay::Overlays::send_broadcast_ex,
                             adnl_id_, overlay_id_, adnl_short_, ton::overlay::Overlays::BroadcastFlagAnySender(),
                             std::move(msg));
+    }
+
+    {
+      auto P = td::PromiseCreator::lambda([SelfId = actor_id(this)](td::Result<ton::dht::DhtValue> res) {
+        if (res.is_ok()) {
+          auto v = res.move_as_ok();
+          auto R = ton::fetch_tl_object<ton::ton_api::overlay_nodes>(v.value().clone(), true);
+          if (R.is_ok()) {
+            auto r = R.move_as_ok();
+            std::cout << ": received " << r->nodes_.size() << " nodes from overlay" << std::endl;
+            std::cout << ": nodes: " << ton::ton_api::to_string(r) << std::endl;
+            std::vector<ton::overlay::OverlayNode> nodes;
+            for (auto &n : r->nodes_) {
+              auto N = ton::overlay::OverlayNode::create(n);
+              if (N.is_ok()) {
+                nodes.emplace_back(N.move_as_ok());
+              }
+            }
+          } else {
+            std::cout << ": incorrect value in DHT for overlay nodes: " << R.move_as_error().to_string() << std::endl;
+          }
+        } else {
+          std::cout << ": can not get value from DHT: " << res.move_as_error().to_string() << std::endl;
+        }
+      });
+      td::actor::send_closure(dht_nodes_[default_dht_node_].get(),
+                              &ton::dht::Dht::get_value,
+                              ton::dht::DhtKey{overlay_id_.pubkey_hash(), "nodes", 0},
+                              std::move(P));
     }
 
     alarm_timestamp() = td::Timestamp::in(1.0 + td::Random::fast(0, 100) * 0.01);
