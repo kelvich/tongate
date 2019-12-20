@@ -53,23 +53,74 @@ void IdentityListener::start_up() {
 
   class Callback : public td::UdpServer::Callback {
    public:
-    Callback(td::actor::ActorId<TonGate> tongate) : tongate_(std::move(tongate)){
+    Callback(td::actor::ActorId<TonGate> tongate, td::actor::ActorShared<IdentityListener> udp_server) :
+      tongate_(std::move(tongate)),
+      udp_server_(std::move(udp_server)){
     }
 
    private:
     td::actor::ActorId<TonGate> tongate_;
+    td::actor::ActorShared<IdentityListener> udp_server_;
+
+    void on_udp_message(td::UdpMessage udp_message) override {
+      auto R = ton::PublicKey::import(udp_message.data);
+      R.ensure();
+      auto pub = R.move_as_ok();
+
+      std::cout
+        << "got identity from "
+        << udp_message.address.get_ip_str().str() << ":"
+        << udp_message.address.get_port() << " "
+        << td::base64_encode(pub.export_as_slice().as_slice())
+        << std::endl;
+
+      td::actor::send_closure(tongate_, &TonGate::add_peer, pub, udp_message.address);
+      udp_message.data = td::BufferSlice("ok");
+      td::actor::send_closure(udp_server_, &IdentityListener::respond, std::move(udp_message));
+    }
+  };
+
+  auto X = td::UdpServer::create("IdentityListener udp server", port_, std::make_unique<Callback>(tongate_, actor_shared(this)));
+  X.ensure();
+  in_udp_server_ = X.move_as_ok();
+}
+
+void IdentityListener::respond(td::UdpMessage message) {
+  td::actor::send_closure(in_udp_server_, &td::UdpServer::send, std::move(message));
+}
+
+/*
+ * Connection
+ */
+
+
+void TonGate::send_identity() {
+  class Callback : public td::UdpServer::Callback {
+   public:
+    Callback(){
+    }
+
+   private:
 
     void on_udp_message(td::UdpMessage udp_message) override {
       std::cout
         << udp_message.address.get_ip_str().str()
         << ":" << udp_message.address.get_port()
+        << " " << udp_message.data.data()
         << std::endl;
     }
   };
 
-  auto X = td::UdpServer::create("udp server", port_, std::make_unique<Callback>(tongate_));
+  auto X = td::UdpServer::create("udp server", 50042, std::make_unique<Callback>());
   X.ensure();
-  in_udp_server_ = X.move_as_ok();
+  udp_client_ = X.move_as_ok();
+
+  td::UdpMessage message;
+  td::IPAddress dest_ip;
+  dest_ip.init_ipv4_port(advertised_ip_addr_.get_ip_str().str(), advertised_ip_addr_.get_port() + 1);
+  message.address = dest_ip;
+  message.data = std::move(adnl_full_.pubkey().export_as_slice());
+  td::actor::send_closure(udp_client_, &td::UdpServer::send, std::move(message));
 }
 
 /*
@@ -137,7 +188,7 @@ void TonGate::run() {
   ton::PublicKey adnl_pub = adnl_pk.compute_public_key();
   add_adnl_addr(adnl_pub, advertised_ip_addr_);
   adnl_id_ = ton::adnl::AdnlNodeIdShort{adnl_pub.compute_short_id()};
-  adnl_short_= adnl_id_.pubkey_hash();
+  adnl_full_ = ton::adnl::AdnlNodeIdFull{adnl_pub};
 
   // start DHT
   ton::PrivateKey dht_pk = load_or_create_key("dht");
@@ -150,16 +201,19 @@ void TonGate::run() {
   dht_node_ = D.move_as_ok();
   td::actor::send_closure(adnl_, &ton::adnl::Adnl::register_dht_node, dht_node_.get());
 
-  // subscribe(adnl_pub, "H");
-
-  // start overlays
   if (toggle_server_) {
+    // subscribe(adnl_pub, "H");
+
+    // start overlays
     overlay_manager_ = ton::overlay::Overlays::create(db_root_, keyring_.get(), adnl_.get(), dht_node_.get());
 
     create_overlay();
 
     idl_ = td::actor::create_actor<IdentityListener>("IdentityListener",
-      advertised_ip_addr_.get_port() + 1, actor_id(this));
+            advertised_ip_addr_.get_port() + 1, actor_id(this));
+  } else {
+
+    send_identity();
   }
 
   alarm_timestamp() = td::Timestamp::in(1.0 + td::Random::fast(0, 100) * 0.01);
@@ -240,6 +294,19 @@ void TonGate::adnl_to_ip(ton::adnl::AdnlNodeIdFull adnl_id) {
 
 }
 
+void TonGate::add_peer(ton::PublicKey dst_pub, td::IPAddress dst_ip) {
+  auto tladdr = ton::create_tl_object<ton::ton_api::adnl_address_udp>(dst_ip.get_ipv4(), dst_ip.get_port());
+  auto addr_vec = std::vector<ton::tl_object_ptr<ton::ton_api::adnl_Address>>();
+  addr_vec.push_back(std::move(tladdr));
+  auto tladdrlist = ton::create_tl_object<ton::ton_api::adnl_addressList>(
+    std::move(addr_vec), ton::adnl::Adnl::adnl_start_time() - 1000, 0, 0, (int)td::Time::now() + 3600);
+  auto addrlist = ton::adnl::AdnlAddressList::create(tladdrlist).move_as_ok();
+
+  td::actor::send_closure(adnl_, &ton::adnl::Adnl::add_id, ton::adnl::AdnlNodeIdFull{dst_pub}, (addrlist));
+  td::actor::send_closure(adnl_, &ton::adnl::Adnl::add_peer, adnl_id_, ton::adnl::AdnlNodeIdFull{dst_pub}, (addrlist));
+
+  std::cout << "add_peer " << dst_ip.get_ip_str().str() << std::endl;
+}
 
 void TonGate::add_adnl_addr(ton::PublicKey pub, td::IPAddress ip_addr) {
     td::uint32 ts = static_cast<td::uint32>(td::Clocks::system());
@@ -327,14 +394,16 @@ void TonGate::alarm() {
       std::cout << "ping closure sent!" << std::endl;
     }
 
-    do_discovery();
+    if (toggle_discovery_) {
+      do_discovery();
+    }
 
     if (toggle_server_) {
       auto msg = td::BufferSlice("Look at me, i'm " + 
         std::to_string(advertised_ip_addr_.get_port()) + " " +
         std::to_string(td::Time::now()));
       td::actor::send_closure(overlay_manager_.get(), &ton::overlay::Overlays::send_broadcast_ex,
-                            adnl_id_, overlay_id_, adnl_short_, ton::overlay::Overlays::BroadcastFlagAnySender(),
+                            adnl_id_, overlay_id_, adnl_id_.pubkey_hash(), ton::overlay::Overlays::BroadcastFlagAnySender(),
                             std::move(msg));
     }
 

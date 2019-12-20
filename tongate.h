@@ -24,6 +24,7 @@ class IdentityListener : public td::actor::Actor {
  public:
 
   void start_up() override;
+  void respond(td::UdpMessage message);
   IdentityListener(td::uint16 port, td::actor::ActorId<TonGate> tongate)
       : port_(port), tongate_(tongate) {
   }
@@ -48,12 +49,15 @@ class TonGate: public td::actor::Actor {
   bool toggle_server_ = false;
   bool toggle_discovery_ = false;
   ton::adnl::AdnlNodeIdShort ping_dest_id_ = ton::adnl::AdnlNodeIdShort::zero();
+  ton::adnl::AdnlNodeIdFull adnl_full_;
 
   ton::PublicKeyHash adnl_short_;
   ton::adnl::AdnlNodeIdShort adnl_id_;
   std::shared_ptr<ton::dht::DhtGlobalConfig> dht_config_;
   ton::overlay::OverlayIdShort overlay_id_;
   td::actor::ActorOwn<IdentityListener> idl_;
+
+  td::actor::ActorOwn<td::UdpServer> udp_client_;
 
   ton::PrivateKey load_or_create_key(std::string name);
   void subscribe(ton::PublicKey dht_pub, std::string prefix);
@@ -62,6 +66,8 @@ class TonGate: public td::actor::Actor {
   void create_overlay();
   void do_discovery();
   void adnl_to_ip(ton::adnl::AdnlNodeIdFull adnl_id);
+
+  void send_identity();
 
  public:
 
@@ -72,6 +78,7 @@ class TonGate: public td::actor::Actor {
   void set_ping_dest(ton::adnl::AdnlNodeIdShort ping_dest_id);
   void toggle_server();
   void toggle_discovery();
+  void add_peer(ton::PublicKey dst_pub, td::IPAddress dst_ip);
 
   TonGate() {}
 
