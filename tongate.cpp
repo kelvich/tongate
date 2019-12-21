@@ -210,7 +210,7 @@ void TonGate::run() {
     idl_ = td::actor::create_actor<IdentityListener>("IdentityListener",
             advertised_ip_addr_.get_port() + 1, actor_id(this));
 
-    subscribe(adnl_pub, "ext:");
+    // subscribe(adnl_pub, "ping");
     start_ext_server();
   } else {
 
@@ -233,11 +233,15 @@ void TonGate::start_ext_server() {
 
 void TonGate::created_ext_server(td::actor::ActorOwn<ton::adnl::AdnlExtServer> server) {
   auto pk = load_or_create_key("extserver");
+  auto pub = pk.compute_public_key();
 
   ext_server_ = std::move(server);
-  td::actor::send_closure(adnl_, &ton::adnl::Adnl::add_id, ton::adnl::AdnlNodeIdFull{pk.compute_public_key()}, ton::adnl::AdnlAddressList{});
-  td::actor::send_closure(ext_server_, &ton::adnl::AdnlExtServer::add_local_id, ton::adnl::AdnlNodeIdShort{pk.compute_short_id()});
+
+  td::actor::send_closure(adnl_, &ton::adnl::Adnl::add_id, ton::adnl::AdnlNodeIdFull{pub}, ton::adnl::AdnlAddressList{});
+  td::actor::send_closure(ext_server_, &ton::adnl::AdnlExtServer::add_local_id, ton::adnl::AdnlNodeIdShort{pub.compute_short_id()});
   td::actor::send_closure(ext_server_, &ton::adnl::AdnlExtServer::add_tcp_port, 4250);
+
+  subscribe(pub, "ext:");
 }
 
 void TonGate::do_discovery() {
