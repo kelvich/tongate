@@ -235,6 +235,7 @@ void TonGate::created_ext_server(td::actor::ActorOwn<ton::adnl::AdnlExtServer> s
   auto pk = load_or_create_key("extserver");
 
   ext_server_ = std::move(server);
+  td::actor::send_closure(adnl_, &ton::adnl::Adnl::add_id, ton::adnl::AdnlNodeIdFull{pk.compute_public_key()}, ton::adnl::AdnlAddressList{});
   td::actor::send_closure(ext_server_, &ton::adnl::AdnlExtServer::add_local_id, ton::adnl::AdnlNodeIdShort{pk.compute_short_id()});
   td::actor::send_closure(ext_server_, &ton::adnl::AdnlExtServer::add_tcp_port, 4250);
 }
