@@ -302,7 +302,7 @@ void TonGate::add_peer(ton::PublicKey dst_pub, td::IPAddress dst_ip) {
     std::move(addr_vec), ton::adnl::Adnl::adnl_start_time() - 1000, 0, 0, (int)td::Time::now() + 3600);
   auto addrlist = ton::adnl::AdnlAddressList::create(tladdrlist).move_as_ok();
 
-  td::actor::send_closure(adnl_, &ton::adnl::Adnl::add_id, ton::adnl::AdnlNodeIdFull{dst_pub}, (addrlist));
+  // td::actor::send_closure(adnl_, &ton::adnl::Adnl::add_id, ton::adnl::AdnlNodeIdFull{dst_pub}, (addrlist));
   td::actor::send_closure(adnl_, &ton::adnl::Adnl::add_peer, adnl_id_, ton::adnl::AdnlNodeIdFull{dst_pub}, (addrlist));
 
   std::cout << "add_peer " << dst_ip.get_ip_str().str() << std::endl;
