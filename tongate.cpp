@@ -111,6 +111,7 @@ void TonGate::send_identity() {
     }
   };
 
+  // XXX: let OS assign port itself
   auto X = td::UdpServer::create("udp server", 50042, std::make_unique<Callback>());
   X.ensure();
   udp_client_ = X.move_as_ok();
@@ -202,21 +203,40 @@ void TonGate::run() {
   td::actor::send_closure(adnl_, &ton::adnl::Adnl::register_dht_node, dht_node_.get());
 
   if (toggle_server_) {
-    // subscribe(adnl_pub, "H");
-
     // start overlays
     overlay_manager_ = ton::overlay::Overlays::create(db_root_, keyring_.get(), adnl_.get(), dht_node_.get());
-
     create_overlay();
 
     idl_ = td::actor::create_actor<IdentityListener>("IdentityListener",
             advertised_ip_addr_.get_port() + 1, actor_id(this));
+
+    subscribe(adnl_pub, "ext:");
+    start_ext_server();
   } else {
 
     send_identity();
   }
 
   alarm_timestamp() = td::Timestamp::in(1.0 + td::Random::fast(0, 100) * 0.01);
+}
+
+void TonGate::start_ext_server() {
+
+  auto Q =
+      td::PromiseCreator::lambda([SelfId = actor_id(this)](td::Result<td::actor::ActorOwn<ton::adnl::AdnlExtServer>> R) {
+        R.ensure();
+        td::actor::send_closure(SelfId, &TonGate::created_ext_server, R.move_as_ok());
+      });
+  td::actor::send_closure(adnl_, &ton::adnl::Adnl::create_ext_server, std::vector<ton::adnl::AdnlNodeIdShort>{},
+                          std::vector<td::uint16>{}, std::move(Q));
+}
+
+void TonGate::created_ext_server(td::actor::ActorOwn<ton::adnl::AdnlExtServer> server) {
+  auto pk = load_or_create_key("extserver");
+
+  ext_server_ = std::move(server);
+  td::actor::send_closure(ext_server_, &ton::adnl::AdnlExtServer::add_local_id, ton::adnl::AdnlNodeIdShort{pk.compute_short_id()});
+  td::actor::send_closure(ext_server_, &ton::adnl::AdnlExtServer::add_tcp_port, 4250);
 }
 
 void TonGate::do_discovery() {
@@ -319,26 +339,29 @@ void TonGate::add_adnl_addr(ton::PublicKey pub, td::IPAddress ip_addr) {
     td::actor::send_closure(adnl_, &ton::adnl::Adnl::add_id, ton::adnl::AdnlNodeIdFull{pub}, std::move(addrlist));
 }
 
-void TonGate::subscribe(ton::PublicKey dht_pub, std::string prefix) {
+void TonGate::subscribe(ton::PublicKey pub, std::string prefix) {
 
   class Callback : public ton::adnl::Adnl::Callback {
    public:
     void receive_message(ton::adnl::AdnlNodeIdShort src, ton::adnl::AdnlNodeIdShort dst, td::BufferSlice data) override {
-        std::cout << "got message" << std::endl;
+      std::cout << "got message(sub): ";
+      std::cout.write(data.as_slice().data(), data.size());
+      std::cout << std::endl;
     }
     void receive_query(ton::adnl::AdnlNodeIdShort src, ton::adnl::AdnlNodeIdShort dst,
                        td::BufferSlice data,
                       td::Promise<td::BufferSlice> promise) override {
-      TRY_RESULT_PROMISE_PREFIX(promise, f, ton::fetch_tl_object<ton::ton_api::adnl_ping>(std::move(data), true),
-                                "adnl.ping expected");
-      std::cout << "got query" << std::endl;
-      promise.set_value(ton::create_serialize_tl_object<ton::ton_api::adnl_pong>(f->value_));
+      // TRY_RESULT_PROMISE_PREFIX(promise, f, ton::fetch_tl_object<ton::ton_api::adnl_ping>(std::move(data), true), "adnl.ping expected");
+      std::cout << "got query(sub): ";
+      std::cout.write(data.as_slice().data(), data.size());
+      std::cout << std::endl;
+      promise.set_value( td::BufferSlice("Hi, there!") );
     }
     Callback() {
     }
   };
 
-  td::actor::send_closure(adnl_, &ton::adnl::Adnl::subscribe, ton::adnl::AdnlNodeIdShort{dht_pub.compute_short_id()},
+  td::actor::send_closure(adnl_, &ton::adnl::Adnl::subscribe, ton::adnl::AdnlNodeIdShort{pub.compute_short_id()},
                           prefix,
                           std::make_unique<Callback>());
 }

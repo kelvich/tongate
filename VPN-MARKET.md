@@ -21,7 +21,7 @@ Proxy/tunnel network traffic through some TON network member. Handle DNS resolut
     Linux cli -- uses kernel module implementation
     Anroid app
     iOS app
-    GPLv2 for linux kernel module, MIT for frontends and 
+    GPLv2 for linux kernel module, MIT for frontends and other stuff
 
     All backend/frontend/protocols are mostly done by Jason A. Donenfeld (www.zx2c4.com)
 
@@ -49,9 +49,3 @@ Proxy/tunnel network traffic through some TON network member. Handle DNS resolut
 + shadowsocks as a brand seem to be popular in some communities. Association with shadowsocks may bring some new users.
 
 - some apps may not support socks (however most browsers/torrents/etc do support it)
-
-## Naming
-    * tongate
-    * tonnel
-    * wormhole
-

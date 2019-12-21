@@ -1,6 +1,7 @@
 #pragma once
 
 #include "adnl/adnl.h"
+#include "adnl/adnl-ext-client.h"
 #include "dht/dht.h"
 #include "td/actor/MultiPromise.h"
 #include "ton/ton-types.h"
@@ -59,13 +60,17 @@ class TonGate: public td::actor::Actor {
 
   td::actor::ActorOwn<td::UdpServer> udp_client_;
 
+  td::actor::ActorOwn<ton::adnl::AdnlExtServer> ext_server_;
+
   ton::PrivateKey load_or_create_key(std::string name);
   void subscribe(ton::PublicKey dht_pub, std::string prefix);
   void add_adnl_addr(ton::PublicKey pub, td::IPAddress ip_addr);
   void send_ping();
   void create_overlay();
   void do_discovery();
+  void created_ext_server(td::actor::ActorOwn<ton::adnl::AdnlExtServer> server);
   void adnl_to_ip(ton::adnl::AdnlNodeIdFull adnl_id);
+  void start_ext_server();
 
   void send_identity();
 
