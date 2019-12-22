@@ -217,7 +217,7 @@ void TonGateServer::run() {
 
     // ext servert2
     // start_ext_server();
-    auto tpk = load_or_create_key("extserver");
+    auto tpk = load_or_create_key("adnl");
     auto tpub = tpk.compute_public_key();
 
     td::actor::send_closure(adnl_, &ton::adnl::Adnl::add_id, ton::adnl::AdnlNodeIdFull{tpub}, ton::adnl::AdnlAddressList{});
@@ -324,10 +324,14 @@ void TonGateServer::adnl_to_ip(ton::adnl::AdnlNodeIdFull adnl_id) {
       ton::ton_api::downcast_call(*const_cast<ton::ton_api::adnl_Address *>(addr.get()),
                                   td::overloaded(
                                       [&](const ton::ton_api::adnl_address_udp &obj) {
-                                        std::cout << "Got addr: " << Ip4String(obj.ip_) << ":" << obj.port_ << std::endl;
+                                        std::cout << "Got addr: " << Ip4String(obj.ip_) << ":" << obj.port_ << " ("
+                                          << td::base64_encode(k.key().public_key().export_as_slice().as_slice())
+                                          << ")" << std::endl;
                                       },
                                       [&](const ton::ton_api::adnl_address_udp6 &obj) {
-                                        std::cout << "Got addr6: " << obj.ip_ << ":" << obj.port_ << std::endl;
+                                        std::cout << "Got addr6: " << obj.ip_ << ":" << obj.port_ << " ("
+                                          << td::base64_encode(k.key().public_key().export_as_slice().as_slice())
+                                          << ")" << std::endl;
                                       }));
     }
   });
