@@ -41,23 +41,23 @@
  * Command-line option setters
  */
 
-void TonGate::set_global_config(std::string str) {
+void TonGateServer::set_global_config(std::string str) {
   global_config_ = str;
 }
 
-void TonGate::set_db_root(std::string db_root) {
+void TonGateServer::set_db_root(std::string db_root) {
   db_root_ = db_root;
 }
 
-void TonGate::set_server_addr(td::IPAddress server_addr) {
+void TonGateServer::set_server_addr(td::IPAddress server_addr) {
   server_ip_addr_ = server_addr;
 }
 
-void TonGate::set_socks_addr(td::IPAddress socks_addr) {
+void TonGateServer::set_socks_addr(td::IPAddress socks_addr) {
   socks_ip_addr_ = socks_addr;
 }
 
-void TonGate::set_ping_dest(ton::adnl::AdnlNodeIdShort ping_dest_id) {
+void TonGateServer::set_ping_dest(ton::adnl::AdnlNodeIdShort ping_dest_id) {
   ping_dest_id_ = ping_dest_id;
 }
 
@@ -65,12 +65,12 @@ void TonGate::set_ping_dest(ton::adnl::AdnlNodeIdShort ping_dest_id) {
  * Boot sequence
  */
 
-void TonGate::start_up() {
+void TonGateServer::start_up() {
   // alarm_timestamp() = td::Timestamp::in(1.0 + td::Random::fast(0, 100) * 0.01);
 }
 
 // XXX: use path.join
-void TonGate::run() {
+void TonGateServer::run() {
 
   std::cout << "rrrun!" << std::endl;
 
@@ -115,7 +115,7 @@ void TonGate::run() {
   alarm_timestamp() = td::Timestamp::in(1.0 + td::Random::fast(0, 100) * 0.01);
 }
 
-void TonGate::add_adnl_addr(ton::PublicKey pub, td::IPAddress ip_addr) {
+void TonGateServer::add_adnl_addr(ton::PublicKey pub, td::IPAddress ip_addr) {
     td::uint32 ts = static_cast<td::uint32>(td::Clocks::system());
     auto tladdr = ton::create_tl_object<ton::ton_api::adnl_address_udp>(ip_addr.get_ipv4(), ip_addr.get_port());
     auto addr_vec = std::vector<ton::tl_object_ptr<ton::ton_api::adnl_Address>>();
@@ -126,7 +126,7 @@ void TonGate::add_adnl_addr(ton::PublicKey pub, td::IPAddress ip_addr) {
     td::actor::send_closure(adnl_, &ton::adnl::Adnl::add_id, ton::adnl::AdnlNodeIdFull{pub}, std::move(addrlist));
 }
 
-td::Status TonGate::load_global_config() {
+td::Status TonGateServer::load_global_config() {
 
   TRY_RESULT_PREFIX(conf_data, td::read_file(global_config_), "failed to read: ");
   TRY_RESULT_PREFIX(conf_json, td::json_decode(conf_data.as_slice()), "failed to parse json: ");
@@ -144,7 +144,7 @@ td::Status TonGate::load_global_config() {
   return td::Status::OK();
 }
 
-ton::PrivateKey TonGate::load_or_create_key(std::string name) {
+ton::PrivateKey TonGateServer::load_or_create_key(std::string name) {
   ton::PrivateKey pk;
   std::string keypath = db_root_ + "/keys/" + name;
 
@@ -168,7 +168,7 @@ ton::PrivateKey TonGate::load_or_create_key(std::string name) {
   return std::move(pk);
 }
 
-void TonGate::alarm() {
+void TonGateServer::alarm() {
 
     {
       auto P = td::PromiseCreator::lambda([SelfId = actor_id(this)](td::Result<ton::dht::DhtValue> res) {
@@ -214,7 +214,7 @@ int main(int argc, char *argv[]) {
   td::OptionsParser p;
   std::vector<std::function<void()>> acts;
   td::uint32 threads = 4;
-  td::actor::ActorOwn<TonGate> x;
+  td::actor::ActorOwn<TonGateServer> x;
 
   p.set_description("Gate to the TON network");
 
@@ -236,12 +236,12 @@ int main(int argc, char *argv[]) {
   });
   p.add_option('C', "global-config", "file to read global config", [&](td::Slice fname) {
     acts.push_back([&x, fname = fname.str()]() {
-          td::actor::send_closure(x, &TonGate::set_global_config, fname);
+          td::actor::send_closure(x, &TonGateServer::set_global_config, fname);
         });
     return td::Status::OK();
   });
   p.add_option('D', "db", "root for dbs", [&](td::Slice fname) {
-    acts.push_back([&x, fname = fname.str()]() { td::actor::send_closure(x, &TonGate::set_db_root, fname); });
+    acts.push_back([&x, fname = fname.str()]() { td::actor::send_closure(x, &TonGateServer::set_db_root, fname); });
     std::cout << "!" << std::endl;
     return td::Status::OK();
   });
@@ -270,14 +270,14 @@ int main(int argc, char *argv[]) {
   p.add_option('s', "server", "start gate server at ip:port", [&](td::Slice arg) {
     td::IPAddress addr;
     TRY_STATUS(addr.init_host_port(arg.str()));
-    acts.push_back([&x, addr]() { td::actor::send_closure(x, &TonGate::set_server_addr, addr); });
+    acts.push_back([&x, addr]() { td::actor::send_closure(x, &TonGateServer::set_server_addr, addr); });
     return td::Status::OK();
   });
   p.add_option('p', "ping", "ping given pubkey via ADNL", [&](td::Slice arg) {
     TRY_RESULT_PREFIX(dst_pub_slice, td::base64_decode(arg), "ADNL pubkey base64 decode failed:");
     TRY_RESULT_PREFIX(dst_pub, ton::PublicKey::import(dst_pub_slice), "ADNL pubkey import failed:");
     auto dest_id = ton::adnl::AdnlNodeIdShort{dst_pub.compute_short_id()};
-    acts.push_back([&x, dest_id]() { td::actor::send_closure(x, &TonGate::set_ping_dest, dest_id); });
+    acts.push_back([&x, dest_id]() { td::actor::send_closure(x, &TonGateServer::set_ping_dest, dest_id); });
     return td::Status::OK();
   });
 
@@ -289,13 +289,13 @@ int main(int argc, char *argv[]) {
 
   td::actor::Scheduler scheduler({threads});
   scheduler.run_in_context([&] {
-    x = td::actor::create_actor<TonGate>("ton-gate");
+    x = td::actor::create_actor<TonGateServer>("ton-gate");
     for (auto &act : acts) {
       std::cout << "act" << std::endl;
       act();
     }
     acts.clear();
-    td::actor::send_closure(x, &TonGate::run);
+    td::actor::send_closure(x, &TonGateServer::run);
   });
   scheduler.run();
 

@@ -12,13 +12,13 @@
 #include <map>
 
 
-class TonGate;
+class TonGateServer;
 
 class IdentityListener : public td::actor::Actor {
 
  private:
 
-  td::actor::ActorId<TonGate> tongate_;
+  td::actor::ActorId<TonGateServer> tongate_;
   td::actor::ActorOwn<td::UdpServer> in_udp_server_;
   td::uint16 port_;
 
@@ -26,12 +26,12 @@ class IdentityListener : public td::actor::Actor {
 
   void start_up() override;
   void respond(td::UdpMessage message);
-  IdentityListener(td::uint16 port, td::actor::ActorId<TonGate> tongate)
+  IdentityListener(td::uint16 port, td::actor::ActorId<TonGateServer> tongate)
       : port_(port), tongate_(tongate) {
   }
 };
 
-class TonGate: public td::actor::Actor {
+class TonGateServer: public td::actor::Actor {
 
  private:
 
@@ -84,7 +84,7 @@ class TonGate: public td::actor::Actor {
   void toggle_discovery();
   void add_peer(ton::PublicKey dst_pub, td::IPAddress dst_ip);
 
-  TonGate() {}
+  TonGateServer() {}
 
   void start_up() override;
   void alarm() override;

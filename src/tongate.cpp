@@ -43,7 +43,7 @@ int main(int argc, char *argv[]) {
   td::OptionsParser p;
   std::vector<std::function<void()>> acts;
   td::uint32 threads = 4;
-  td::actor::ActorOwn<TonGate> x;
+  td::actor::ActorOwn<TonGateServer> x;
 
   p.set_description("Gate to the TON network");
 
@@ -65,12 +65,12 @@ int main(int argc, char *argv[]) {
   });
   p.add_option('C', "global-config", "file to read global config", [&](td::Slice fname) {
     acts.push_back([&x, fname = fname.str()]() {
-          td::actor::send_closure(x, &TonGate::set_global_config, fname);
+          td::actor::send_closure(x, &TonGateServer::set_global_config, fname);
         });
     return td::Status::OK();
   });
   p.add_option('D', "db", "root for dbs", [&](td::Slice fname) {
-    acts.push_back([&x, fname = fname.str()]() { td::actor::send_closure(x, &TonGate::set_db_root, fname); });
+    acts.push_back([&x, fname = fname.str()]() { td::actor::send_closure(x, &TonGateServer::set_db_root, fname); });
     return td::Status::OK();
   });
   p.add_option('l', "logname", "log to file", [&](td::Slice fname) {
@@ -98,17 +98,17 @@ int main(int argc, char *argv[]) {
   p.add_option('a', "advertise", "advertise ip:port as public address", [&](td::Slice arg) {
     td::IPAddress addr;
     TRY_STATUS(addr.init_host_port(arg.str()));
-    acts.push_back([&x, addr]() { td::actor::send_closure(x, &TonGate::set_advertised_addr, addr); });
+    acts.push_back([&x, addr]() { td::actor::send_closure(x, &TonGateServer::set_advertised_addr, addr); });
     return td::Status::OK();
   });
   p.add_option('s', "server", "start server at advertised address", [&]() {
-    acts.push_back([&x]() { td::actor::send_closure(x, &TonGate::toggle_server); });
+    acts.push_back([&x]() { td::actor::send_closure(x, &TonGateServer::toggle_server); });
     return td::Status::OK();
   });
   p.add_option('c', "client", "start SOCKS5 gate client at ip:port", [&](td::Slice arg) {
     td::IPAddress addr;
     TRY_STATUS(addr.init_host_port(arg.str()));
-    acts.push_back([&x, addr]() { td::actor::send_closure(x, &TonGate::set_socks_addr, addr); });
+    acts.push_back([&x, addr]() { td::actor::send_closure(x, &TonGateServer::set_socks_addr, addr); });
     return td::Status::OK();
   });
   // p.add_option('T', "tun", "capture packets on TUN virtual interface", [&](td::Slice arg) {
@@ -119,11 +119,11 @@ int main(int argc, char *argv[]) {
     TRY_RESULT_PREFIX(dst_pub_slice, td::base64_decode(arg), "ADNL pubkey base64 decode failed:");
     TRY_RESULT_PREFIX(dst_pub, ton::PublicKey::import(dst_pub_slice), "ADNL pubkey import failed:");
     auto dest_id = ton::adnl::AdnlNodeIdShort{dst_pub.compute_short_id()};
-    acts.push_back([&x, dest_id]() { td::actor::send_closure(x, &TonGate::set_ping_dest, dest_id); });
+    acts.push_back([&x, dest_id]() { td::actor::send_closure(x, &TonGateServer::set_ping_dest, dest_id); });
     return td::Status::OK();
   });
   p.add_option('L', "lookup", "lookup available entry points", [&]() {
-    acts.push_back([&x]() { td::actor::send_closure(x, &TonGate::toggle_discovery); });
+    acts.push_back([&x]() { td::actor::send_closure(x, &TonGateServer::toggle_discovery); });
     return td::Status::OK();
   });
 
@@ -135,12 +135,12 @@ int main(int argc, char *argv[]) {
 
   td::actor::Scheduler scheduler({threads});
   scheduler.run_in_context([&] {
-    x = td::actor::create_actor<TonGate>("ton-gate");
+    x = td::actor::create_actor<TonGateServer>("ton-gate");
     for (auto &act : acts) {
       act();
     }
     acts.clear();
-    td::actor::send_closure(x, &TonGate::run);
+    td::actor::send_closure(x, &TonGateServer::run);
   });
   scheduler.run();
 
