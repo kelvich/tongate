@@ -180,6 +180,10 @@ class TunnelClient : public td::actor::Actor {
     }
   }
 
+  void send(td::BufferSlice data) {
+    td::actor::send_closure(conn_, &TunnelOutboundConnection::send, std::move(data));
+  }
+
   void destroy_query(AdnlQueryId id) {
     out_queries_.erase(id);
     try_stop();
@@ -300,7 +304,26 @@ public:
 
   void run() {
 
-    class Callback : public ton::adnl::AdnlExtClient::Callback {
+    // class Callback : public ton::adnl::AdnlExtClient::Callback {
+    //  public:
+    //   void on_ready() override {
+    //     // td::actor::send_closure(id_, &TonGateClient::conn_ready);
+    //   }
+    //   void on_stop_ready() override {
+    //     // td::actor::send_closure(id_, &TonGateClient::conn_closed);
+    //   }
+    //   Callback(td::actor::ActorId<TonGateClient> id) : id_(std::move(id)) {
+    //   }
+    //  private:
+    //   td::actor::ActorId<TonGateClient> id_;
+    // };
+
+    // client_ = ton::adnl::AdnlExtClient::create(ton::adnl::AdnlNodeIdFull{server_public_key_},
+    //                                            server_ipaddr_,
+    //                                            std::make_unique<Callback>(actor_id(this)));
+
+
+    class Callback : public ton::adnl::TunnelClient::Callback {
      public:
       void on_ready() override {
         // td::actor::send_closure(id_, &TonGateClient::conn_ready);
@@ -314,8 +337,9 @@ public:
       td::actor::ActorId<TonGateClient> id_;
     };
 
-
-    client_ = ton::adnl::AdnlExtClient::create(ton::adnl::AdnlNodeIdFull{server_public_key_},
+    client_ = td::actor::create_actor<ton::adnl::TunnelClient>(
+                                               "tunnel-client",
+                                               ton::adnl::AdnlNodeIdFull{server_public_key_},
                                                server_ipaddr_,
                                                std::make_unique<Callback>(actor_id(this)));
 
@@ -325,20 +349,19 @@ public:
   void alarm() {
 
     auto b = td::BufferSlice("ext:Ahoy!");
-    auto P =
-        td::PromiseCreator::lambda([](td::Result<td::BufferSlice> R) {
-          if (R.is_ok()) {
-            auto data = R.move_as_ok();
-            std::cout << "got response: ";
-            std::cout.write(data.as_slice().data(), data.size());
-            std::cout << std::endl;
-          } else {
-            std::cout << "oops!" << std:: endl;
-          }
-        });
+    // auto P =
+    //     td::PromiseCreator::lambda([](td::Result<td::BufferSlice> R) {
+    //       if (R.is_ok()) {
+    //         auto data = R.move_as_ok();
+    //         std::cout << "got response: ";
+    //         std::cout.write(data.as_slice().data(), data.size());
+    //         std::cout << std::endl;
+    //       } else {
+    //         std::cout << "oops!" << std:: endl;
+    //       }
+    //     });
 
-    td::actor::send_closure(client_, &ton::adnl::AdnlExtClient::send_query, "ping-query", std::move(b),
-                            td::Timestamp::in(10.0), std::move(P));
+    td::actor::send_closure(client_, &ton::adnl::TunnelClient::send, std::move(b));
   }
 
 
@@ -347,7 +370,7 @@ private:
   ton::PublicKey server_public_key_;
   td::IPAddress server_ipaddr_;
   td::IPAddress server_socks_ipaddr_;
-  td::actor::ActorOwn<ton::adnl::AdnlExtClient> client_;
+  td::actor::ActorOwn<ton::adnl::TunnelClient> client_;
 
 };
 

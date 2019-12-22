@@ -31,7 +31,6 @@ class IdentityListener : public td::actor::Actor {
   }
 };
 
-
 class TonGate: public td::actor::Actor {
 
  private:
@@ -60,7 +59,7 @@ class TonGate: public td::actor::Actor {
 
   td::actor::ActorOwn<td::UdpServer> udp_client_;
 
-  td::actor::ActorOwn<ton::adnl::AdnlExtServer> ext_server_;
+  // td::actor::ActorOwn<ton::adnl::TunnelClient> ext_server_;
 
   ton::PrivateKey load_or_create_key(std::string name);
   void subscribe(ton::PublicKey dht_pub, std::string prefix);

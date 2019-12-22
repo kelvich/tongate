@@ -39,16 +39,23 @@ class TunnelInboundConnection;
 
 class TunnelServer : public td::actor::Actor {
  public:
-  TunnelServer(td::uint16 port, AdnlNodeIdShort id, td::actor::ActorId<AdnlPeerTable> peer_table)
-      : port_(port)
-      , id_(id)
-      , peer_table_(peer_table) {
+  class Callback {
+   public:
+    virtual void on_message(td::BufferSlice data);
+  };
 
-    class Callback : public td::TcpListener::Callback {
+  TunnelServer(td::uint16 port, AdnlNodeIdShort local_id, td::actor::ActorId<keyring::Keyring> keyring)
+      : port_(port)
+      , local_id_(local_id)
+      , keyring_(keyring) {
+  }
+
+  void run() {
+    class Callbackx : public td::TcpListener::Callback {
      private:
       td::actor::ActorId<TunnelServer> id_;
      public:
-      Callback(td::actor::ActorId<TunnelServer> id) : id_(id) {
+      Callbackx(td::actor::ActorId<TunnelServer> id) : id_(id) {
       }
       void accept(td::SocketFd fd) override {
         td::actor::send_closure(id_, &TunnelServer::accepted, std::move(fd));
@@ -57,33 +64,34 @@ class TunnelServer : public td::actor::Actor {
 
     listener_ = td::actor::create_actor<td::TcpInfiniteListener>(
         td::actor::ActorOptions().with_name("listener").with_poll(),
-        port,
-        std::make_unique<Callback>(actor_id(this)));
+        port_,
+        std::make_unique<Callbackx>(actor_id(this)));
   }
 
   void accepted(td::SocketFd fd) {
     td::actor::create_actor<TunnelInboundConnection>(td::actor::ActorOptions().with_name("inconn").with_poll(),
-                                                 std::move(fd), peer_table_, actor_id(this))
+                                                 std::move(fd), actor_id(this))
       .release();
   }
 
   void decrypt_init_packet(AdnlNodeIdShort dst, td::BufferSlice data, td::Promise<td::BufferSlice> promise) {
-    td::actor::send_closure(peer_table_, &AdnlPeerTable::decrypt_message, dst, std::move(data), std::move(promise));
+    // td::actor::send_closure(peer_table_, &AdnlPeerTable::decrypt_message, dst, std::move(data), std::move(promise));
+    td::actor::send_closure(keyring_, &keyring::Keyring::decrypt_message, local_id_.pubkey_hash(), std::move(data),
+                          std::move(promise));
   }
 
  private:
   td::uint16 port_;
-  AdnlNodeIdShort id_;
-  td::actor::ActorId<AdnlPeerTable> peer_table_;
+  AdnlNodeIdShort local_id_;
+  td::actor::ActorId<keyring::Keyring> keyring_;
   td::actor::ActorOwn<td::TcpInfiniteListener> listener_;
 };
 
 class TunnelInboundConnection : public AdnlExtConnection {
 public:
-  TunnelInboundConnection(td::SocketFd fd, td::actor::ActorId<AdnlPeerTable> peer_table,
+  TunnelInboundConnection(td::SocketFd fd,
                           td::actor::ActorId<TunnelServer> server)
       : AdnlExtConnection(std::move(fd), nullptr, false)
-      , peer_table_(peer_table)
       , server_(server) {
   }
 
@@ -120,7 +128,12 @@ public:
   }
 
   td::Status process_packet(td::BufferSlice data) override {
-    td::actor::send_closure(peer_table_, &AdnlPeerTable::deliver, remote_id_, local_id_, std::move(data));
+    // td::actor::send_closure(peer_table_, &AdnlPeerTable::deliver, remote_id_, local_id_, std::move(data));
+
+    std::cout << "got message(TunnelInboundConnection): ";
+    std::cout.write(data.as_slice().data(), data.size());
+    std::cout << std::endl;
+
     return td::Status::OK();
   }
 
@@ -142,10 +155,9 @@ public:
   }
 
 private:
-  td::actor::ActorId<AdnlPeerTable> peer_table_;
   td::actor::ActorId<TunnelServer> server_;
   AdnlNodeIdShort local_id_;
-  AdnlNodeIdShort remote_id_ = AdnlNodeIdShort::zero();
+  // AdnlNodeIdShort remote_id_ = AdnlNodeIdShort::zero();
 };
 
 
@@ -333,7 +345,25 @@ void TonGate::run() {
             advertised_ip_addr_.get_port() + 1, actor_id(this));
 
     // subscribe(adnl_pub, "ping");
-    start_ext_server();
+    
+
+    // ext servert2
+    // start_ext_server();
+    auto tpk = load_or_create_key("extserver");
+    auto tpub = tpk.compute_public_key();
+
+    td::actor::send_closure(adnl_, &ton::adnl::Adnl::add_id, ton::adnl::AdnlNodeIdFull{tpub}, ton::adnl::AdnlAddressList{});
+
+
+    auto act = td::actor::create_actor<ton::adnl::TunnelServer>("tunnel-server",
+                                                        4250,
+                                                        ton::adnl::AdnlNodeIdShort{tpub.compute_short_id()},
+                                                        keyring_.get()
+                                                        );
+    td::actor::send_closure(act, &ton::adnl::TunnelServer::run);
+    act.release();
+
+    subscribe(tpub, "ext:");
   } else {
 
     send_identity();
@@ -342,29 +372,29 @@ void TonGate::run() {
   alarm_timestamp() = td::Timestamp::in(1.0 + td::Random::fast(0, 100) * 0.01);
 }
 
-void TonGate::start_ext_server() {
+// void TonGate::start_ext_server() {
 
-  auto Q =
-      td::PromiseCreator::lambda([SelfId = actor_id(this)](td::Result<td::actor::ActorOwn<ton::adnl::AdnlExtServer>> R) {
-        R.ensure();
-        td::actor::send_closure(SelfId, &TonGate::created_ext_server, R.move_as_ok());
-      });
-  td::actor::send_closure(adnl_, &ton::adnl::Adnl::create_ext_server, std::vector<ton::adnl::AdnlNodeIdShort>{},
-                          std::vector<td::uint16>{}, std::move(Q));
-}
+//   auto Q =
+//       td::PromiseCreator::lambda([SelfId = actor_id(this)](td::Result<td::actor::ActorOwn<ton::adnl::AdnlExtServer>> R) {
+//         R.ensure();
+//         td::actor::send_closure(SelfId, &TonGate::created_ext_server, R.move_as_ok());
+//       });
+//   td::actor::send_closure(adnl_, &ton::adnl::Adnl::create_ext_server, std::vector<ton::adnl::AdnlNodeIdShort>{},
+//                           std::vector<td::uint16>{}, std::move(Q));
+// }
 
-void TonGate::created_ext_server(td::actor::ActorOwn<ton::adnl::AdnlExtServer> server) {
-  auto pk = load_or_create_key("extserver");
-  auto pub = pk.compute_public_key();
+// void TonGate::created_ext_server(td::actor::ActorOwn<ton::adnl::AdnlExtServer> server) {
+//   auto pk = load_or_create_key("extserver");
+//   auto pub = pk.compute_public_key();
 
-  ext_server_ = std::move(server);
+//   ext_server_ = std::move(server);
 
-  td::actor::send_closure(adnl_, &ton::adnl::Adnl::add_id, ton::adnl::AdnlNodeIdFull{pub}, ton::adnl::AdnlAddressList{});
-  td::actor::send_closure(ext_server_, &ton::adnl::AdnlExtServer::add_local_id, ton::adnl::AdnlNodeIdShort{pub.compute_short_id()});
-  td::actor::send_closure(ext_server_, &ton::adnl::AdnlExtServer::add_tcp_port, 4250);
+//   td::actor::send_closure(adnl_, &ton::adnl::Adnl::add_id, ton::adnl::AdnlNodeIdFull{pub}, ton::adnl::AdnlAddressList{});
+//   td::actor::send_closure(ext_server_, &ton::adnl::AdnlExtServer::add_local_id, ton::adnl::AdnlNodeIdShort{pub.compute_short_id()});
+//   td::actor::send_closure(ext_server_, &ton::adnl::AdnlExtServer::add_tcp_port, 4250);
 
-  subscribe(pub, "ext:");
-}
+//   subscribe(pub, "ext:");
+// }
 
 void TonGate::do_discovery() {
   auto P = td::PromiseCreator::lambda([SelfId = actor_id(this)](td::Result<ton::dht::DhtValue> res) {
