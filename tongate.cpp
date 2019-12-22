@@ -1,3 +1,6 @@
+#include "adnl/adnl-ext-client.h"
+#include "adnl/adnl-ext-connection.hpp"
+#include "adnl/adnl-peer-table.h"
 #include "ton/ton-types.h"
 #include "ton/ton-tl.hpp"
 #include "ton/ton-io.hpp"
@@ -29,6 +32,125 @@
 #include <cstdlib>
 #include <set>
 
+namespace ton {
+namespace adnl {
+
+class TunnelInboundConnection;
+
+class TunnelServer : public td::actor::Actor {
+ public:
+  TunnelServer(td::uint16 port, AdnlNodeIdShort id, td::actor::ActorId<AdnlPeerTable> peer_table)
+      : port_(port)
+      , id_(id)
+      , peer_table_(peer_table) {
+
+    class Callback : public td::TcpListener::Callback {
+     private:
+      td::actor::ActorId<TunnelServer> id_;
+     public:
+      Callback(td::actor::ActorId<TunnelServer> id) : id_(id) {
+      }
+      void accept(td::SocketFd fd) override {
+        td::actor::send_closure(id_, &TunnelServer::accepted, std::move(fd));
+      }
+    };
+
+    listener_ = td::actor::create_actor<td::TcpInfiniteListener>(
+        td::actor::ActorOptions().with_name("listener").with_poll(),
+        port,
+        std::make_unique<Callback>(actor_id(this)));
+  }
+
+  void accepted(td::SocketFd fd) {
+    td::actor::create_actor<TunnelInboundConnection>(td::actor::ActorOptions().with_name("inconn").with_poll(),
+                                                 std::move(fd), peer_table_, actor_id(this))
+      .release();
+  }
+
+  void decrypt_init_packet(AdnlNodeIdShort dst, td::BufferSlice data, td::Promise<td::BufferSlice> promise) {
+    td::actor::send_closure(peer_table_, &AdnlPeerTable::decrypt_message, dst, std::move(data), std::move(promise));
+  }
+
+ private:
+  td::uint16 port_;
+  AdnlNodeIdShort id_;
+  td::actor::ActorId<AdnlPeerTable> peer_table_;
+  td::actor::ActorOwn<td::TcpInfiniteListener> listener_;
+};
+
+class TunnelInboundConnection : public AdnlExtConnection {
+public:
+  TunnelInboundConnection(td::SocketFd fd, td::actor::ActorId<AdnlPeerTable> peer_table,
+                          td::actor::ActorId<TunnelServer> server)
+      : AdnlExtConnection(std::move(fd), nullptr, false)
+      , peer_table_(peer_table)
+      , server_(server) {
+  }
+
+  td::Status process_init_packet(td::BufferSlice data) override {
+    if (data.size() < 32) {
+      return td::Status::Error(ErrorCode::protoviolation, "too small init packet");
+    }
+    local_id_ = AdnlNodeIdShort{data.as_slice().truncate(32)};
+    data.confirm_read(32);
+
+    auto P = td::PromiseCreator::lambda([SelfId = actor_id(this)](td::Result<td::BufferSlice> R) {
+      td::actor::send_closure(SelfId, &TunnelInboundConnection::inited_crypto, std::move(R));
+    });
+
+    td::actor::send_closure(server_, &TunnelServer::decrypt_init_packet, local_id_, std::move(data),
+                            std::move(P));
+    stop_read();
+    return td::Status::OK();
+  }
+
+  td::Status process_custom_packet(td::BufferSlice &data, bool &processed) override {
+    if (data.size() == 12) {
+      auto F = fetch_tl_object<ton_api::tcp_ping>(data.clone(), true);
+      if (F.is_ok()) {
+        auto f = F.move_as_ok();
+        auto obj = create_tl_object<ton_api::tcp_pong>(f->random_id_);
+        send(serialize_tl_object(obj, true));
+        processed = true;
+        return td::Status::OK();
+      }
+    }
+
+    return td::Status::OK();
+  }
+
+  td::Status process_packet(td::BufferSlice data) override {
+    td::actor::send_closure(peer_table_, &AdnlPeerTable::deliver, remote_id_, local_id_, std::move(data));
+    return td::Status::OK();
+  }
+
+  void inited_crypto(td::Result<td::BufferSlice> R) {
+    if (R.is_error()) {
+      LOG(ERROR) << "failed to init crypto: " << R.move_as_error();
+      stop();
+      return;
+    }
+    auto S = init_crypto(R.move_as_ok().as_slice());
+    if (S.is_error()) {
+      LOG(ERROR) << "failed to init crypto (2): " << R.move_as_error();
+      stop();
+      return;
+    }
+    send(td::BufferSlice());
+    resume_read();
+    notify();
+  }
+
+private:
+  td::actor::ActorId<AdnlPeerTable> peer_table_;
+  td::actor::ActorId<TunnelServer> server_;
+  AdnlNodeIdShort local_id_;
+  AdnlNodeIdShort remote_id_ = AdnlNodeIdShort::zero();
+};
+
+
+}  // namespace adnl
+}  // namespace ton
 
 // XXX: change to get_ip_str()
 static std::string Ip4String(std::int32_t num)
