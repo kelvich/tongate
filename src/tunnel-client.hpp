@@ -1,3 +1,5 @@
+#pragma once
+
 #include "adnl/adnl-ext-client.h"
 #include "adnl/adnl-ext-connection.hpp"
 #include "adnl/adnl-ext-client.hpp"

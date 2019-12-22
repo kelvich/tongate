@@ -22,7 +22,6 @@
 #include "overlay/overlays.h"
 #include "overlay/overlay.hpp"
 
-#include "tunnel-server.hpp"
 #include "server.h"
 
 #if TD_DARWIN || TD_LINUX
@@ -121,7 +120,7 @@ void TonGateServer::send_identity() {
 
   td::UdpMessage message;
   td::IPAddress dest_ip;
-  dest_ip.init_ipv4_port(advertised_ip_addr_.get_ip_str().str(), advertised_ip_addr_.get_port() + 1);
+  (void) dest_ip.init_ipv4_port(advertised_ip_addr_.get_ip_str().str(), advertised_ip_addr_.get_port() + 1);
   message.address = dest_ip;
   message.data = std::move(adnl_full_.pubkey().export_as_slice());
   td::actor::send_closure(udp_client_, &td::UdpServer::send, std::move(message));
@@ -224,15 +223,14 @@ void TonGateServer::run() {
     td::actor::send_closure(adnl_, &ton::adnl::Adnl::add_id, ton::adnl::AdnlNodeIdFull{tpub}, ton::adnl::AdnlAddressList{});
 
 
-    auto act = td::actor::create_actor<ton::adnl::TunnelServer>("tunnel-server",
+    tunnel_server_ = td::actor::create_actor<ton::adnl::TunnelServer>("tunnel-server",
                                                         4250,
                                                         ton::adnl::AdnlNodeIdShort{tpub.compute_short_id()},
                                                         keyring_.get()
                                                         );
-    td::actor::send_closure(act, &ton::adnl::TunnelServer::run);
-    act.release();
+    td::actor::send_closure(tunnel_server_, &ton::adnl::TunnelServer::run);
 
-    subscribe(tpub, "ext:");
+    // subscribe(tpub, "ext:");
   } else {
 
     send_identity();

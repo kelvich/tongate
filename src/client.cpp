@@ -23,6 +23,7 @@
 #include "overlay/overlay.hpp"
 
 #include "tunnel-client.hpp"
+#include "socks.hpp"
 
 #if TD_DARWIN || TD_LINUX
 #include <unistd.h>
@@ -87,6 +88,10 @@ public:
                                                std::make_unique<Callback>(actor_id(this)));
 
     alarm_timestamp() = td::Timestamp::in(1.0 + td::Random::fast(0, 100) * 0.01);
+
+    auto socks_server_ = td::actor::create_actor<SocksServer>("socks-server", 5555);
+    td::actor::send_closure(socks_server_, &SocksServer::run);
+    socks_server_.release();
   }
 
   void alarm() {

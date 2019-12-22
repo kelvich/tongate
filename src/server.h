@@ -8,6 +8,8 @@
 #include "auto/tl/ton_api_json.h"
 #include "auto/tl/ton_api.hpp"
 
+#include "tunnel-server.hpp"
+
 #include <set>
 #include <map>
 
@@ -59,7 +61,7 @@ class TonGateServer: public td::actor::Actor {
 
   td::actor::ActorOwn<td::UdpServer> udp_client_;
 
-  // td::actor::ActorOwn<ton::adnl::TunnelClient> ext_server_;
+  td::actor::ActorOwn<ton::adnl::TunnelServer> tunnel_server_;
 
   ton::PrivateKey load_or_create_key(std::string name);
   void subscribe(ton::PublicKey dht_pub, std::string prefix);
