@@ -42,7 +42,7 @@ To find a node to connect run following:
 ```sh
 >  ./tongate -D dbs_discovery C ton-global.config.json -a IP:PORT -v 2 -L
 ```
-Where `IP:PORT` should be externally accessible. If you are behind the NAT you may find out your external address and set port to some random number. Usually NAT preserves senders UDP port (if it was not already occupied) and you will be able to get DHT responses back. It usually takes about a minute to gather all overlay participants while rinnung client behind NAT.
+Where `IP:PORT` should be externally accessible. If you are behind the NAT you may find out your external address and set port to some random number. Usually NAT preserves senders UDP port (if it was not already occupied) and you will be able to get DHT responses back. It usually takes about a minute to gather all overlay participants while rinnung discovery behind NAT.
 
 ## Running client
 
