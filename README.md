@@ -40,15 +40,15 @@ Where `IP:PORT` is advertised adress of that server and should be externally acc
 
 To find a node to connect run following:
 ```sh
->  ./tongate -D dbs_discovery -a IP:PORT -v 2 -L
+>  ./tongate -D dbs_discovery C ton-global.config.json -a IP:PORT -v 2 -L
 ```
-Where `IP:PORT` should be externally accessible. If you are behind the NAT you may find out your external address and sent port to some random number. Usually NAT prepserves sending UDP port (if it was not already occupied) and you will be able to get DHT responses back.
+Where `IP:PORT` should be externally accessible. If you are behind the NAT you may find out your external address and set port to some random number. Usually NAT preserves senders UDP port (if it was not already occupied) and you will be able to get DHT responses back.
 
 ## Running client
 
 To connect to the selected server run:
 ```sh
-> ./client -v 4 -c SERVER_IP:PORT -p SERVER_PUBKEY
+> ./client -c SERVER_IP:PORT -p SERVER_PUBKEY -v 2
 ```
 That will also start local SOCKS5 server on port 5555 (which is not yet working, but just emits some stuff in log when somebody connects to it).
 
